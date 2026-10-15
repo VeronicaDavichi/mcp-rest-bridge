@@ -1,0 +1,12 @@
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+Thumbs.db
+desktop.ini
+~$*
+.DS_Store
