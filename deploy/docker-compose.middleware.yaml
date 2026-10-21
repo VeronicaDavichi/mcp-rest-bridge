@@ -1,0 +1,157 @@
+# =============================================================================
+# MCP REST Bridge —— 中间件编排（只跑依赖，不跑业务）
+# =============================================================================
+# 定位：本文件**只管中间件**（MySQL / PostgreSQL / Redis / MinIO）。
+#       业务容器（nginx + backend + frontend）在 `docker-compose.yaml` 里，
+#       两个文件**分开**，好处是"只重启中间件"时不用碰业务、反之亦然。
+#
+# 启动：  docker compose -f docker-compose.middleware.yaml --env-file .env up -d
+# 查看：  docker compose -f docker-compose.middleware.yaml ps
+# 停止：  docker compose -f docker-compose.middleware.yaml down
+# 清数据：docker compose -f docker-compose.middleware.yaml down -v   # ⚠️ 删卷，慎用
+#
+# ⚠️ 所有口令都从 `.env` 读（同目录），仓库只提交 `.env.example`。
+# ⚠️ 本文件**不含 nginx**：nginx 属于业务编排，对外统一域名由它负责。
+# =============================================================================
+name: mcp-rest-bridge-middleware
+
+services:
+  # ---------------------------------------------------------------------------
+  # MySQL — 阶段 0 默认库（要求 8.0.30+，见《数据库设计》§18 Q1）
+  # ---------------------------------------------------------------------------
+  mysql:
+    image: mysql:8.0.36
+    container_name: mcpbridge-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      TZ: ${TZ}
+    command:
+      - --character-set-server=utf8mb4
+      # 服务器默认排序规则用 MySQL 官方默认（_ai_ci）；
+      # ⚠️ B6 定案：**唯一索引列由 DDL 显式指定 `utf8mb4_0900_bin`**，不靠服务器默认。
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --default-time-zone=+08:00
+      # 逻辑备份/导入大文件时放宽（仅开发环境需要）
+      - --max-allowed-packet=64M
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — 双库路线的第二库（13 / 14，此处取 14）
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:14-alpine
+    container_name: mcpbridge-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      TZ: ${TZ}
+      # 中文排序/大小写行为按库默认即可；唯一约束的确定性由 DDL 显式控制
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # Redis — 会话/缓存 + `mcp_config` 失效广播（§12.2）
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7.4-alpine
+    container_name: mcpbridge-redis
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ}
+    command:
+      - redis-server
+      - --requirepass
+      - ${REDIS_PASSWORD}
+      - --appendonly
+      - "yes"
+      - --maxmemory-policy
+      - noeviction
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a $$REDIS_PASSWORD ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # MinIO — S3 兼容对象存储
+  # ---------------------------------------------------------------------------
+  # 用途与边界（**别误解成"本期就跑 S3"**）：
+  #   · 本期后端 `MCP_STORAGE_BACKEND=local`（本机磁盘），**不连 MinIO**；
+  #   · 本服务是为 **二期 S3 后端**准备的**联调目标** + 演示环境对象存储；
+  #   · 好处：二期只需改配置 + 接上 `MCP_S3_*`，**不用再动基础设施**。
+  #   · ⚠️ 若某天决定"本期就接 S3"，**先确认 agent 所在网络能访问它**（A23 的硬要求）。
+  # ---------------------------------------------------------------------------
+  minio:
+    image: minio/minio:latest
+    container_name: mcpbridge-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MCP_S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MCP_S3_SECRET_KEY}
+      TZ: ${TZ}
+    command: server /data --console-address ":9001"
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"      # S3 API
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"  # Web 控制台
+    volumes:
+      - minio-data:/data
+    # 不给 minio 配 healthcheck：近版本镜像精简过常用探测工具（curl / mc 未必在），
+    # 用下面的 minio-init 自己重试更稳，也避免"健康检查永远 unhealthy"的假告警。
+
+  # ---------------------------------------------------------------------------
+  # minio-init — 建桶（幂等）+ 置为私有，跑完即退出
+  # ---------------------------------------------------------------------------
+  minio-init:
+    image: minio/mc:latest
+    container_name: mcpbridge-minio-init
+    depends_on:
+      - minio
+    environment:
+      MCP_S3_BUCKET: ${MCP_S3_BUCKET}
+      MCP_S3_ACCESS_KEY: ${MCP_S3_ACCESS_KEY}
+      MCP_S3_SECRET_KEY: ${MCP_S3_SECRET_KEY}
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 $$MCP_S3_ACCESS_KEY $$MCP_S3_SECRET_KEY >/dev/null 2>&1; do
+        echo '[minio-init] waiting for minio...'; sleep 3;
+      done;
+      mc mb --ignore-existing local/$$MCP_S3_BUCKET;
+      mc anonymous set none local/$$MCP_S3_BUCKET;
+      echo '[minio-init] bucket ready (private): '$$MCP_S3_BUCKET;
+      "
+    restart: "no"
+
+volumes:
+  mysql-data:
+  pg-data:
+  redis-data:
+  minio-data:
