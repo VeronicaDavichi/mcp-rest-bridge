@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  P2 探针（S4：era 分流 + 真传输 + 真报文），**不是** mcp-rest-bridge 的正式构建文件。
+  目的：在 Spring Boot 4.1.1 + JDK 25 上实测
+    ① 形态二（Streamable）与形态三（Stateless）能否同时挂在 POST /mcp
+    ② 真实 initialize 报文里 capabilities 长什么样（logging 到底有没有）
+    ③ server/discover 在 SDK 上到底能不能用
+    ④ 列表过滤在真传输上是否逐请求生效；被隐藏的工具直调是否仍然执行（D1）
+  位置故意放在 _work/spike/ 下，不破坏仓库「设计阶段只有 Markdown + UI 资产」的边界。
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>4.1.1</version>
+    <relativePath/>
+  </parent>
+
+  <groupId>probe</groupId>
+  <artifactId>mcp-boot-probe</artifactId>
+  <version>0.1.0</version>
+  <name>MCP Boot spike probe (P2)</name>
+
+  <properties>
+    <java.version>25</java.version>
+    <mcp.sdk.version>2.1.0</mcp.sdk.version>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.modelcontextprotocol.sdk</groupId>
+      <artifactId>mcp</artifactId>
+      <version>${mcp.sdk.version}</version>
+    </dependency>
+  </dependencies>
+</project>
