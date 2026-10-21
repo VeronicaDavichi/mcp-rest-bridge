@@ -3,6 +3,18 @@ __pycache__/
 *.pyc
 *.pyo
 
+# Java / Maven
+target/
+*.class
+
+# Node
+node_modules/
+dist/
+
+# 密钥 / 环境变量（仓库只提交 *.example）
+.env
+deploy/.env
+
 # 编辑器 / 系统
 .idea/
 .vscode/
@@ -10,3 +22,11 @@ Thumbs.db
 desktop.ini
 ~$*
 .DS_Store
+
+# 设计稿 PSD 导出产物（可重跑 _work/psd-export/psd2png.py 生成）
+_work/psd-export/
+
+# SDK 二进制与解包源码（第三方产物，不入仓）
+_work/spike/*.jar
+_work/spike/*.zip
+_work/spike/sdk-src/
